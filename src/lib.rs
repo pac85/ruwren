@@ -115,9 +115,7 @@ impl ModuleLibrary {
 
     /// Attempts to find a [`RuntimeClass`] given a `module` name and a `class` name
     fn get_foreign_class<M: AsRef<str>, C: AsRef<str>>(
-        &self,
-        module: M,
-        class: C,
+        &self, module: M, class: C,
     ) -> Option<&RuntimeClass> {
         self.modules
             .get(module.as_ref())
@@ -566,6 +564,7 @@ impl Printer for PrintlnPrinter {
 #[derive(Debug)]
 pub struct VM {
     pub vm: *mut WrenVM,
+    custom_binders: Option<CustomBindingFns>,
     error_recv: Receiver<WrenError>,
 }
 
@@ -682,9 +681,7 @@ impl VMWrapper {
 
     /// Interprets a given string as Wren code
     pub fn interpret<M: AsRef<str>, C: AsRef<str>>(
-        &self,
-        module: M,
-        code: C,
+        &self, module: M, code: C,
     ) -> Result<(), VMError> {
         let module = ffi::CString::new(module.as_ref()).expect("module name conversion failed");
         let code = ffi::CString::new(code.as_ref()).expect("code conversion failed");
@@ -774,6 +771,7 @@ pub struct VMConfig {
     initial_heap_size: usize,
     min_heap_size: usize,
     heap_growth_percent: usize,
+    custom_bindings: Option<CustomBindingFns>,
 
     /// Enables @module syntax to mean `module` loaded relative to current module
     enable_relative_import: bool,
@@ -794,6 +792,8 @@ impl VMConfig {
             initial_heap_size: 1024 * 1024 * 10,
             min_heap_size: 1024 * 1024,
             heap_growth_percent: 50,
+            custom_bindings: None,
+
             enable_relative_import: false,
         }
     }
@@ -833,6 +833,11 @@ impl VMConfig {
         self
     }
 
+    pub fn custom_bindings(mut self, custom_bindings: CustomBindingFns) -> Self {
+        self.custom_bindings = Some(custom_bindings);
+        self
+    }
+
     pub fn enable_relative_import(mut self, eri: bool) -> Self {
         self.enable_relative_import = eri;
         self
@@ -844,6 +849,7 @@ impl VMConfig {
         // Have an uninitialized VM...
         let wvm = Rc::new(RefCell::new(VM {
             vm: std::ptr::null_mut(),
+            custom_binders: self.custom_bindings,
             error_recv: erx,
         }));
 
@@ -1030,10 +1036,7 @@ impl VM {
     ///
     /// Returns None if the variable does not exist
     pub fn get_variable<M: AsRef<str>, N: AsRef<str>>(
-        &self,
-        module: M,
-        name: N,
-        slot: SlotId,
+        &self, module: M, name: N, slot: SlotId,
     ) -> bool {
         self.ensure_slots(slot + 1);
         if !self.has_variable(&module, &name) {
@@ -1215,11 +1218,7 @@ impl VM {
     ///  
     /// WARNING: This *will* overwrite slot 0, so be careful.
     pub fn set_slot_new_foreign<M: AsRef<str>, C: AsRef<str>, T: 'static + ClassObject>(
-        &self,
-        module: M,
-        class: C,
-        object: T,
-        slot: SlotId,
+        &self, module: M, class: C, object: T, slot: SlotId,
     ) -> Result<&mut T, ForeignSendError> {
         self.ensure_slots(slot + 1);
         let conf = unsafe { &mut *(wren_sys::wrenGetUserData(self.vm) as *mut UserData) };
@@ -1281,12 +1280,7 @@ impl VM {
     }
 
     pub fn set_slot_new_foreign_scratch<M: AsRef<str>, C: AsRef<str>, T: 'static + ClassObject>(
-        &self,
-        module: M,
-        class: C,
-        object: T,
-        slot: SlotId,
-        scratch: SlotId,
+        &self, module: M, class: C, object: T, slot: SlotId, scratch: SlotId,
     ) -> Result<&mut T, ForeignSendError> {
         self.ensure_slots(slot.max(scratch) + 1);
         let conf = unsafe { &mut *(wren_sys::wrenGetUserData(self.vm) as *mut UserData) };
@@ -1348,8 +1342,7 @@ impl VM {
     }
 
     fn make_call_handle<'b>(
-        vm: *mut WrenVM,
-        signature: FunctionSignature,
+        vm: *mut WrenVM, signature: FunctionSignature,
     ) -> Rc<FunctionHandle<'b>> {
         let signature =
             ffi::CString::new(signature.as_wren_string()).expect("signature conversion failed");
@@ -1377,4 +1370,12 @@ impl Drop for VM {
             wren_sys::wrenFreeVM(self.vm);
         }
     }
+}
+
+use wren_sys::{WrenBindForeignClassFn, WrenBindForeignMethodFn};
+
+#[derive(Debug, Clone, Copy)]
+pub struct CustomBindingFns {
+    pub bind_foreign_method_fn: WrenBindForeignMethodFn,
+    pub bind_foreign_class_fn: WrenBindForeignClassFn,
 }

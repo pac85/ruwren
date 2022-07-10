@@ -86,15 +86,15 @@ pub extern "C" fn wren_print(vm: *mut WrenVM, message: *const raw::c_char) {
 }
 
 pub extern "C" fn wren_bind_foreign_method(
-    vm: *mut WrenVM, mdl: *const raw::c_char, class: *const raw::c_char, is_static: bool,
+    vm: *mut WrenVM, mdl: *const raw::c_char, clss: *const raw::c_char, is_static: bool,
     sgn: *const raw::c_char,
 ) -> Option<unsafe extern "C" fn(*mut WrenVM)> {
     let conf = unsafe { &mut *(wren_sys::wrenGetUserData(vm) as *mut UserData) };
     let module = unsafe { ffi::CStr::from_ptr(mdl) };
-    let class = unsafe { ffi::CStr::from_ptr(class) };
+    let class = unsafe { ffi::CStr::from_ptr(clss) };
     let signature = unsafe { ffi::CStr::from_ptr(sgn) };
 
-    if let Some(ref library) = conf.library {
+    let ret = if let Some(ref library) = conf.library {
         if let Some(rc) =
             library.get_foreign_class(module.to_string_lossy(), class.to_string_lossy())
         {
@@ -111,11 +111,19 @@ pub extern "C" fn wren_bind_foreign_method(
         }
     } else {
         None
-    }
+    };
+
+    ret.or_else(|| {
+        conf.vm
+            .upgrade()
+            .and_then(|vm| vm.as_ref().borrow().custom_binders)
+            .and_then(|custom_binders| custom_binders.bind_foreign_method_fn)
+            .and_then(|f| unsafe { (f)(vm, mdl, clss, is_static, sgn) })
+    })
 }
 
 pub extern "C" fn wren_bind_foreign_class(
-    vm: *mut WrenVM, mdl: *const raw::c_char, class: *const raw::c_char,
+    vm: *mut WrenVM, mdl: *const raw::c_char, clss: *const raw::c_char,
 ) -> WrenForeignClassMethods {
     let mut fcm = WrenForeignClassMethods {
         allocate: None,
@@ -124,13 +132,15 @@ pub extern "C" fn wren_bind_foreign_class(
 
     let conf = unsafe { &mut *(wren_sys::wrenGetUserData(vm) as *mut UserData) };
     let module = unsafe { ffi::CStr::from_ptr(mdl) };
-    let class = unsafe { ffi::CStr::from_ptr(class) };
+    let class = unsafe { ffi::CStr::from_ptr(clss) };
 
     if let Some(ref library) = conf.library {
         let rc = library.get_foreign_class(module.to_string_lossy(), class.to_string_lossy());
         if let Some(rc) = rc {
             fcm.allocate = Some(rc.construct);
             fcm.finalize = Some(rc.destruct);
+        } else if let Some(cfcm) = conf.vm.upgrade().and_then(|vm| vm.as_ref().borrow().custom_binders).and_then(|custom_binders| custom_binders.bind_foreign_class_fn).map(|f| unsafe {(f)(vm, mdl, clss)}) {
+            fcm = cfcm;
         }
     }
     fcm
