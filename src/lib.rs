@@ -689,8 +689,8 @@ impl VMWrapper {
         match unsafe {
             wren_sys::wrenInterpret(
                 vm.vm,
-                module.as_ptr() as *const i8,
-                code.as_ptr() as *const i8,
+                module.as_ptr() as *const _,
+                code.as_ptr() as *const _,
             )
         } {
             wren_sys::WrenInterpretResult_WREN_RESULT_SUCCESS => Ok(()),
